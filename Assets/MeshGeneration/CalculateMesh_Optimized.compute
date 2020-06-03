@@ -1,0 +1,104 @@
+﻿#pragma kernel CSMain
+
+// Might have to make boxSize constant. Imagine 16 x 16 x 16 for now.
+#include "PerlinHLSL.compute"
+#include "Triangulation.compute"
+
+float4 boxSize;
+float4 boxOrigin;
+
+// Noise Params
+float noiseScale;
+float noiseIntensity;
+float secondaryNoiseIntensity;
+float secondaryNoiseScale;
+float3 secondaryNoiseOffset;
+float maskScale;
+float maskOffset;
+float planetSize;
+
+struct Triangle
+{
+    int3 v1;
+    int3 v2;
+    int3 v3;
+};
+
+// Each float3 is a vertex, every 3 vertex is a triangle
+AppendStructuredBuffer<Triangle> tris; 
+
+static const float3 cubePoints[12] =
+{
+    float3(0.5, 0, 1),
+    float3(1, 0, 0.5),
+    float3(0.5, 0, 0),
+    float3(0, 0, 0.5),
+    float3(0.5, 1, 1),
+    float3(1, 1, 0.5),
+    float3(0.5, 1, 0),
+    float3(0, 1, 0.5),
+    float3(0, 0.5, 1),
+    float3(1, 0.5, 1),
+    float3(1, 0.5, 0),
+    float3(0, 0.5, 0)
+};
+
+float GetMaskValue(float3 p)
+{
+    float theta = atan2(p.z, p.x);
+    float alpha = atan2(p.y, sqrt(p.z * p.z + p.x * p.x));
+
+    float v = (Noise(p.x * maskScale + maskOffset, p.y * maskScale + maskOffset, p.z * maskScale + maskOffset) + 1) / 2.0f;
+    // float v = (Noise(p.x * maskScale, 0, p.z * maskScale) + 1) / 2.0f;
+    // float v = (Noise(theta * maskScale, maskOffset, alpha * maskScale) + 1) / 2.0f;
+
+    float beta = 3;
+    return 1 / (1 + pow((v/(1-v)), -beta));
+}
+
+bool IsPointOutside(float3 p)
+{
+    float mainNoise = Noise(p.x * noiseScale, p.y * noiseScale, p.z * noiseScale) * noiseIntensity;
+    float secondaryNoise = Noise(p.x * secondaryNoiseScale + secondaryNoiseOffset.x, p.y * secondaryNoiseScale + secondaryNoiseOffset.x, p.z * secondaryNoiseScale + secondaryNoiseOffset.z) * secondaryNoiseIntensity;
+    float maskFactor = maskScale <= 0 ? 1 : GetMaskValue(p);
+    return sqrt(p.x * p.x + p.y * p.y + p.z * p.z) < planetSize + (mainNoise + secondaryNoise) * maskFactor;
+    // return length(p) < 20 + (mainNoise + secondaryNoise) * maskFactor;
+}
+
+[numthreads(8, 8, 8)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    if((int)id.x >= boxSize.x || (int)id.y >= boxSize.y || (int)id.z >= boxSize.z) return;
+
+    float3 worldPos = boxOrigin.xyz - (boxSize.xyz-1) / 2 + float3(id.x, id.y, id.z);
+
+    // Possible optimization : Don't use conditionals here, GPU doesn't like them
+    int cubeConfig = 0;
+    cubeConfig += !IsPointOutside(worldPos + float3(0, 0, 1)) ? 1 : 0;
+    cubeConfig += !IsPointOutside(worldPos + float3(1, 0, 1)) ? 2 : 0;
+    cubeConfig += !IsPointOutside(worldPos + float3(1, 0, 0)) ? 4 : 0;
+    cubeConfig += !IsPointOutside(worldPos + float3(0, 0, 0)) ? 8 : 0;
+    cubeConfig += !IsPointOutside(worldPos + float3(0, 1, 1)) ? 16 : 0;
+    cubeConfig += !IsPointOutside(worldPos + float3(1, 1, 1)) ? 32 : 0;
+    cubeConfig += !IsPointOutside(worldPos + float3(1, 1, 0)) ? 64 : 0;
+    cubeConfig += !IsPointOutside(worldPos + float3(0, 1, 0)) ? 128 : 0;
+
+    for(int i = 0; i < 5; i++)
+    {   
+        if(triangulation[cubeConfig][i*3] >= 0 && triangulation[cubeConfig][i*3+1] >= 0 && triangulation[cubeConfig][i*3+2] >= 0)
+        {
+            Triangle tri;
+            float3 v1 = cubePoints[triangulation[cubeConfig][i*3]] + worldPos;
+            float3 v2 = cubePoints[triangulation[cubeConfig][i*3+1]] + worldPos;
+            float3 v3 = cubePoints[triangulation[cubeConfig][i*3+2]] + worldPos;
+
+            // INT TEST
+            tri.v1 = (int3)(v1 * 2);
+            tri.v2 = (int3)(v2 * 2);
+            tri.v3 = (int3)(v3 * 2);
+
+            tris.Append(tri);
+        }
+    }
+}
+
