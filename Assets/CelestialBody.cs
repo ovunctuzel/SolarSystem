@@ -28,6 +28,10 @@ public class CelestialBody : MonoBehaviour
     void Start()
     {
         InitializeState();
+        if(GetComponent<LineRenderer>())
+        {
+            GetComponent<LineRenderer>().enabled = false;
+        }
     }
 
     void InitializeState()
